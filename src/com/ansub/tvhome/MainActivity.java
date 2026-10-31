@@ -185,8 +185,23 @@ public class MainActivity extends Activity {
     // label change, so nothing is rebuilt.
     private ImageView netIcon;
     private int netState = -1;
+
+    // The weather next to the clock (see Weather). It updates only while this screen is in front.
+    private LinearLayout weatherBox, weatherDays;
+    private ImageView weatherIcon;
+    private TextView weatherTemp, weatherPlace;
+    private boolean resumed, weatherLoading;
+    private long weatherTriedAt; // the last failed try, so a TV with no internet isn't asking every second
+    private final Runnable weatherTick = this::refreshWeather;
     private final ConnectivityManager.NetworkCallback networkChanged = new ConnectivityManager.NetworkCallback() {
-        @Override public void onAvailable(Network n) { runOnUiThread(MainActivity.this::refreshNetwork); }
+        @Override public void onAvailable(Network n) {
+            runOnUiThread(() -> {
+                refreshNetwork();
+                // Back online (or online at last after a restart): try the weather again now.
+                weatherTriedAt = 0;
+                if (resumed) refreshWeather();
+            });
+        }
         @Override public void onLost(Network n) { runOnUiThread(MainActivity.this::refreshNetwork); }
         // Also fires when the Wi-Fi signal gets stronger or weaker.
         @Override public void onCapabilitiesChanged(Network n, NetworkCapabilities c) {
@@ -229,7 +244,16 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-2, -2);
         tp.topMargin = px(-20); // pull the big digits up under the date
         clock.addView(time, tp);
-        root.addView(clock, at(px(MARGIN), px(92), -2, -2));
+        // The weather sits to the right of the clock and follows its width (12:00 is wider than 9:00).
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.TOP); // the clock stays put; the weather never pushes it down
+        top.addView(clock, new LinearLayout.LayoutParams(-2, -2));
+        LinearLayout.LayoutParams wp = new LinearLayout.LayoutParams(-2, -2);
+        wp.leftMargin = px(88);
+        wp.topMargin = px(36); // the temperature level with the big digits, not with the date above them
+        top.addView(buildWeather(), wp);
+        root.addView(top, at(px(MARGIN), px(92), -2, -2));
 
         moveHint = text(px(24), 0xA8FFFFFF, regular);
         moveHint.setText(Strings.t("Use the arrows to move it, then press OK"));
@@ -282,7 +306,8 @@ public class MainActivity extends Activity {
         String quick = intent == null ? null : intent.getStringExtra("quick");
         String clock = intent == null ? null : intent.getStringExtra("clock");
         String fake = intent == null ? null : intent.getStringExtra("fakeinputs");
-        if (apps == null && quick == null && clock == null && fake == null) return false;
+        String weather = intent == null ? null : intent.getStringExtra("weather");
+        if (apps == null && quick == null && clock == null && fake == null && weather == null) return false;
         SharedPreferences prefs = getSharedPreferences(PREFS, 0);
         String stamp = intent.getStringExtra("stamp");
         if (stamp != null && stamp.equals(prefs.getString("stamp", null))) return false;
@@ -302,6 +327,18 @@ public class MainActivity extends Activity {
             clock = clock.trim();
             if (clock.isEmpty() || clock.equalsIgnoreCase("auto")) e.remove(PREF_CLOCK);
             else e.putString(PREF_CLOCK, clock);
+        }
+        // --es weather "Sesto Fiorentino" shows that place's weather; off (or empty) hides it again.
+        // A new place drops the old one's forecast, so it is never shown under the new name.
+        if (weather != null) {
+            weather = weather.trim();
+            String old = prefs.getString(Weather.PREF_PLACE, null);
+            if (weather.isEmpty() || weather.equalsIgnoreCase("off")) {
+                e.remove(Weather.PREF_PLACE).remove(Weather.PREF_GEO).remove(Weather.PREF_DATA).remove(Weather.PREF_AT);
+            } else if (!weather.equals(old)) {
+                e.putString(Weather.PREF_PLACE, weather).remove(Weather.PREF_DATA).remove(Weather.PREF_AT);
+            }
+            weatherTriedAt = 0;
         }
         // Set only by install.sh's FAKE_INPUT=1, which also installs the throwaway input itself.
         // It is for an emulator, which has no HDMI ports, and never for a real TV.
@@ -352,6 +389,8 @@ public class MainActivity extends Activity {
             buildTiles();
         }
         refreshNetwork();
+        resumed = true;
+        refreshWeather();
         View f = getCurrentFocus();
         if (f == null && !tiles.isEmpty()) tiles.get(0).requestFocus();
         HomeButton.onHomeResumed(this); // back on this home screen: Home comes here again
@@ -368,6 +407,9 @@ public class MainActivity extends Activity {
         // Left normally (an app or Settings opened), so it didn't crash.
         getWindow().getDecorView().removeCallbacks(homeOk);
         HomeButton.onHomeOk(this);
+        // No weather updates while an app is in front; onResume catches up.
+        resumed = false;
+        getWindow().getDecorView().removeCallbacks(weatherTick);
     }
 
     // Back from a menu or a window on top (like the uninstall prompt): catch up on apps that changed.
@@ -872,6 +914,129 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             return OFFLINE;
         }
+    }
+
+    // Icon and temperature in big type, then the place and the sky in words, then today and tomorrow.
+    // Hidden until there is a forecast to show.
+    private View buildWeather() {
+        weatherBox = new LinearLayout(this);
+        weatherBox.setOrientation(LinearLayout.VERTICAL);
+        weatherBox.setVisibility(View.GONE);
+
+        LinearLayout now = new LinearLayout(this);
+        now.setOrientation(LinearLayout.HORIZONTAL);
+        now.setGravity(Gravity.CENTER_VERTICAL);
+        weatherIcon = new ImageView(this);
+        now.addView(weatherIcon, new LinearLayout.LayoutParams(px(96), px(96)));
+        weatherTemp = text(px(112), Color.WHITE, semibold);
+        weatherTemp.setIncludeFontPadding(false);
+        weatherTemp.setFontFeatureSettings("tnum");
+        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-2, -2);
+        tp.leftMargin = px(20);
+        now.addView(weatherTemp, tp);
+        weatherBox.addView(now, new LinearLayout.LayoutParams(-2, -2));
+
+        weatherPlace = text(px(26), 0xA8FFFFFF, regular);
+        weatherPlace.setSingleLine(true);
+        LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(-2, -2);
+        pp.topMargin = px(14);
+        weatherBox.addView(weatherPlace, pp);
+
+        weatherDays = new LinearLayout(this);
+        weatherDays.setOrientation(LinearLayout.HORIZONTAL);
+        weatherDays.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams dp = new LinearLayout.LayoutParams(-2, -2);
+        dp.topMargin = px(8);
+        weatherBox.addView(weatherDays, dp);
+        return weatherBox;
+    }
+
+    // Shows the saved forecast, fetches a new one if it's 30 minutes old, and comes back when the
+    // next one is due. Called on resume, when the network comes back, and by its own timer.
+    private void refreshWeather() {
+        if (weatherBox == null) return;
+        View decor = getWindow().getDecorView();
+        decor.removeCallbacks(weatherTick);
+        SharedPreferences p = prefs();
+        if (p.getString(Weather.PREF_PLACE, null) == null) {
+            weatherBox.setVisibility(View.GONE);
+            return;
+        }
+        showWeather();
+        long now = System.currentTimeMillis();
+        long age = now - p.getLong(Weather.PREF_AT, 0);
+        if (age < 0) age = Weather.REFRESH_MS; // the clock went back: fetch again
+        long next = Weather.REFRESH_MS - age;
+        if (next <= 0) {
+            if (!weatherLoading && now - weatherTriedAt >= Weather.RETRY_MS) {
+                weatherLoading = true;
+                new Thread(() -> {
+                    boolean ok;
+                    try {
+                        Weather.update(p);
+                        ok = true;
+                    } catch (Throwable t) {
+                        ok = false;
+                    }
+                    final boolean done = ok;
+                    runOnUiThread(() -> {
+                        weatherLoading = false;
+                        weatherTriedAt = done ? 0 : System.currentTimeMillis();
+                        if (isDestroyed()) return;
+                        showWeather();
+                        if (resumed) refreshWeather();
+                    });
+                }, "weather").start();
+                return;
+            }
+            next = Weather.RETRY_MS - (now - weatherTriedAt);
+        }
+        if (resumed) decor.postDelayed(weatherTick, Math.max(next, 60 * 1000L));
+    }
+
+    private void showWeather() {
+        Weather.Now w = Weather.load(prefs(), System.currentTimeMillis());
+        if (w == null) {
+            weatherBox.setVisibility(View.GONE);
+            return;
+        }
+        weatherIcon.setImageDrawable(new LineIcon(Weather.icon(w.code, w.day)));
+        weatherTemp.setText(w.temp + "°");
+        weatherPlace.setText(w.place + "  ·  " + Strings.t(Weather.label(w.code)));
+        weatherDays.removeAllViews();
+        if (w.hasToday) addWeatherDay(Strings.t("Today"), w.todayCode, w.todayMax, w.todayMin);
+        if (w.hasTomorrow) {
+            if (w.hasToday) {
+                TextView dot = text(px(26), 0x66FFFFFF, regular);
+                dot.setText("·");
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+                lp.leftMargin = lp.rightMargin = px(18);
+                weatherDays.addView(dot, lp);
+            }
+            addWeatherDay(Strings.t("Tomorrow"), w.tomorrowCode, w.tomorrowMax, w.tomorrowMin);
+        }
+        weatherDays.setVisibility(weatherDays.getChildCount() > 0 ? View.VISIBLE : View.GONE);
+        weatherBox.setContentDescription(w.place + ", " + w.temp + "°, " + Strings.t(Weather.label(w.code)));
+        weatherBox.setVisibility(View.VISIBLE);
+    }
+
+    // "Oggi [icon] 19° / 10°": the day dimmed, the high bright, the low dimmed.
+    private void addWeatherDay(String day, int code, int max, int min) {
+        TextView name = text(px(26), 0xA8FFFFFF, regular);
+        name.setText(day);
+        weatherDays.addView(name, new LinearLayout.LayoutParams(-2, -2));
+        ImageView icon = new ImageView(this);
+        icon.setImageDrawable(new LineIcon(Weather.icon(code, true)));
+        LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(px(34), px(34));
+        ip.leftMargin = ip.rightMargin = px(10);
+        weatherDays.addView(icon, ip);
+        TextView temps = text(px(26), Color.WHITE, semibold);
+        temps.setFontFeatureSettings("tnum");
+        android.text.SpannableString s = new android.text.SpannableString(max + "°  /  " + min + "°");
+        int slash = s.toString().indexOf('/');
+        s.setSpan(new android.text.style.ForegroundColorSpan(0xA8FFFFFF), slash, s.length(), 0);
+        temps.setText(s);
+        weatherDays.addView(temps, new LinearLayout.LayoutParams(-2, -2));
     }
 
     private void refreshNetwork() {

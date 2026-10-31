@@ -544,6 +544,21 @@ Press **Up** from your apps to reach them. A shortcut your TV has no screen for 
 
 </details>
 
+<details>
+<summary><b>Can I see the weather next to the clock?</b></summary>
+<br>
+
+Yes. Pick your town when you install:
+
+```sh
+WEATHER="Sesto Fiorentino" sh install.sh <TV_IP>
+WEATHER=off sh install.sh <TV_IP>      # take it away
+```
+
+It shows the temperature now, then today's and tomorrow's high and low. The forecast comes from [Open-Meteo](https://open-meteo.com): free, no account, no key. It's the only part of this home screen that uses the internet, and only once you set a town: it looks the town up once, then fetches a forecast at most every 30 minutes while the home screen is on screen. Without internet it keeps showing the last forecast for up to 6 hours, then hides it.
+
+</details>
+
 <a id="undo"></a>
 <details>
 <summary><b>How do I undo it?</b></summary>
