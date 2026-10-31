@@ -16,6 +16,8 @@ final class Strings {
         // The weather next to the clock. Only Italian has these so far; other languages show English.
         "Today", "Tomorrow", "Clear", "Mostly clear", "Partly cloudy", "Cloudy", "Fog", "Drizzle", "Rain",
         "Showers", "Snow", "Thunderstorm",
+        // The football team at the top right. Italian only so far, like the weather.
+        "Next match", "Live now", "Home", "Away",
     };
 
     // Keyed by language ("de"), or language-country ("zh-TW") where a country writes it differently.
@@ -67,6 +69,7 @@ final class Strings {
             "Rinomina", "Mostra ingressi nascosti", "TV", "Portatile", "PC", "Blu-ray", "Soundbar", "Digita un nome…",
             "Oggi", "Domani", "Sereno", "Poco nuvoloso", "Parzialmente nuvoloso", "Nuvoloso", "Nebbia", "Pioviggine", "Pioggia",
             "Rovesci", "Neve", "Temporale",
+            "Prossima", "In corso", "casa", "fuori",
         });
         LANGS.put("ja", new String[] {
             "設定", "アプリを追加", "ネットワーク", "オフライン", "サウンド", "画像",

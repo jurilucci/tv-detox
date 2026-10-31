@@ -190,16 +190,85 @@ public class MainActivity extends Activity {
     private LinearLayout weatherBox, weatherDays;
     private ImageView weatherIcon;
     private TextView weatherTemp, weatherPlace;
-    private boolean resumed, weatherLoading;
-    private long weatherTriedAt; // the last failed try, so a TV with no internet isn't asking every second
-    private final Runnable weatherTick = this::refreshWeather;
+    private boolean resumed;
+
+    // The football team at the top right (see Team): the table on the left, the next match on the right.
+    private static final int TEAM_TABLE_W = 232, TEAM_GAP = 40, TEAM_MATCH_W = 200, TEAM_ROW = 31;
+    private LinearLayout teamBox, teamTable, teamMatch;
+
+    private final Feed weather = new Feed(Weather.REFRESH_MS, Weather.RETRY_MS) {
+        @Override boolean on() { return prefs().getString(Weather.PREF_PLACE, null) != null; }
+        @Override long fetchedAt() { return prefs().getLong(Weather.PREF_AT, 0); }
+        @Override void fetch() throws Exception { Weather.update(prefs()); }
+        @Override void show() { showWeather(); }
+    };
+    private final Feed team = new Feed(Team.REFRESH_MS, Team.RETRY_MS) {
+        @Override boolean on() { return prefs().getString(Team.PREF_TEAM, null) != null; }
+        @Override long fetchedAt() { return prefs().getLong(Team.PREF_AT, 0); }
+        @Override void fetch() throws Exception { Team.update(prefs(), getFilesDir()); }
+        @Override void show() { showTeam(); }
+    };
+
+    // Something fetched in the background while this screen is in front: on resume, when the network
+    // comes back, and then every `every` ms. After a failed try it waits `retry` ms, so a TV with no
+    // internet isn't asking all the time. show() runs with whatever is saved, fresh or not.
+    private abstract class Feed {
+        final long every, retry;
+        boolean loading;
+        long triedAt; // the last failed try
+        final Runnable tick = this::refresh;
+
+        Feed(long every, long retry) { this.every = every; this.retry = retry; }
+        abstract boolean on();
+        abstract long fetchedAt();
+        abstract void fetch() throws Exception; // off the main thread
+        abstract void show();
+
+        void refresh() {
+            View decor = getWindow().getDecorView();
+            decor.removeCallbacks(tick);
+            show();
+            if (!on()) return;
+            long now = System.currentTimeMillis();
+            long age = now - fetchedAt();
+            if (age < 0) age = every; // the clock went back: fetch again
+            long next = every - age;
+            if (next <= 0) {
+                if (!loading && now - triedAt >= retry) {
+                    loading = true;
+                    new Thread(() -> {
+                        boolean ok;
+                        try {
+                            fetch();
+                            ok = true;
+                        } catch (Throwable t) {
+                            ok = false;
+                        }
+                        final boolean done = ok;
+                        runOnUiThread(() -> {
+                            loading = false;
+                            triedAt = done ? 0 : System.currentTimeMillis();
+                            if (isDestroyed()) return;
+                            if (resumed) refresh();
+                            else show();
+                        });
+                    }, "feed").start();
+                    return;
+                }
+                next = retry - (now - triedAt);
+            }
+            if (resumed) decor.postDelayed(tick, Math.max(next, 60 * 1000L));
+        }
+
+        void stop() { getWindow().getDecorView().removeCallbacks(tick); }
+    }
     private final ConnectivityManager.NetworkCallback networkChanged = new ConnectivityManager.NetworkCallback() {
         @Override public void onAvailable(Network n) {
             runOnUiThread(() -> {
                 refreshNetwork();
                 // Back online (or online at last after a restart): try the weather again now.
-                weatherTriedAt = 0;
-                if (resumed) refreshWeather();
+                weather.triedAt = team.triedAt = 0;
+                if (resumed) { weather.refresh(); team.refresh(); }
             });
         }
         @Override public void onLost(Network n) { runOnUiThread(MainActivity.this::refreshNetwork); }
@@ -254,6 +323,8 @@ public class MainActivity extends Activity {
         wp.topMargin = px(36); // the temperature level with the big digits, not with the date above them
         top.addView(buildWeather(), wp);
         root.addView(top, at(px(MARGIN), px(92), -2, -2));
+        // Placed for real by buildTiles, which knows how many icons sit at the top right.
+        root.addView(buildTeam(), at(0, 0, px(TEAM_TABLE_W + TEAM_GAP + TEAM_MATCH_W), -2));
 
         moveHint = text(px(24), 0xA8FFFFFF, regular);
         moveHint.setText(Strings.t("Use the arrows to move it, then press OK"));
@@ -306,8 +377,9 @@ public class MainActivity extends Activity {
         String quick = intent == null ? null : intent.getStringExtra("quick");
         String clock = intent == null ? null : intent.getStringExtra("clock");
         String fake = intent == null ? null : intent.getStringExtra("fakeinputs");
-        String weather = intent == null ? null : intent.getStringExtra("weather");
-        if (apps == null && quick == null && clock == null && fake == null && weather == null) return false;
+        String place = intent == null ? null : intent.getStringExtra("weather");
+        String teamName = intent == null ? null : intent.getStringExtra("team");
+        if (apps == null && quick == null && clock == null && fake == null && place == null && teamName == null) return false;
         SharedPreferences prefs = getSharedPreferences(PREFS, 0);
         String stamp = intent.getStringExtra("stamp");
         if (stamp != null && stamp.equals(prefs.getString("stamp", null))) return false;
@@ -330,15 +402,25 @@ public class MainActivity extends Activity {
         }
         // --es weather "Sesto Fiorentino" shows that place's weather; off (or empty) hides it again.
         // A new place drops the old one's forecast, so it is never shown under the new name.
-        if (weather != null) {
-            weather = weather.trim();
+        if (place != null) {
+            place = place.trim();
             String old = prefs.getString(Weather.PREF_PLACE, null);
-            if (weather.isEmpty() || weather.equalsIgnoreCase("off")) {
+            if (place.isEmpty() || place.equalsIgnoreCase("off")) {
                 e.remove(Weather.PREF_PLACE).remove(Weather.PREF_GEO).remove(Weather.PREF_DATA).remove(Weather.PREF_AT);
-            } else if (!weather.equals(old)) {
-                e.putString(Weather.PREF_PLACE, weather).remove(Weather.PREF_DATA).remove(Weather.PREF_AT);
+            } else if (!place.equals(old)) {
+                e.putString(Weather.PREF_PLACE, place).remove(Weather.PREF_DATA).remove(Weather.PREF_AT);
             }
-            weatherTriedAt = 0;
+            weather.triedAt = 0;
+        }
+        // --es team "Fiorentina" shows that team's table and next match; off (or empty) hides it.
+        if (teamName != null) {
+            teamName = teamName.trim();
+            if (teamName.isEmpty() || teamName.equalsIgnoreCase("off")) {
+                e.remove(Team.PREF_TEAM).remove(Team.PREF_DATA).remove(Team.PREF_AT);
+            } else if (!teamName.equals(prefs.getString(Team.PREF_TEAM, null))) {
+                e.putString(Team.PREF_TEAM, teamName).remove(Team.PREF_DATA).remove(Team.PREF_AT);
+            }
+            team.triedAt = 0;
         }
         // Set only by install.sh's FAKE_INPUT=1, which also installs the throwaway input itself.
         // It is for an emulator, which has no HDMI ports, and never for a real TV.
@@ -390,7 +472,8 @@ public class MainActivity extends Activity {
         }
         refreshNetwork();
         resumed = true;
-        refreshWeather();
+        weather.refresh();
+        team.refresh();
         View f = getCurrentFocus();
         if (f == null && !tiles.isEmpty()) tiles.get(0).requestFocus();
         HomeButton.onHomeResumed(this); // back on this home screen: Home comes here again
@@ -409,7 +492,8 @@ public class MainActivity extends Activity {
         HomeButton.onHomeOk(this);
         // No weather updates while an app is in front; onResume catches up.
         resumed = false;
-        getWindow().getDecorView().removeCallbacks(weatherTick);
+        weather.stop();
+        team.stop();
     }
 
     // Back from a menu or a window on top (like the uninstall prompt): catch up on apps that changed.
@@ -608,6 +692,7 @@ public class MainActivity extends Activity {
         // The last icon's right edge lines up with the apps' (its focus circle sticks out past them).
         int qx = getResources().getDisplayMetrics().widthPixels - m + (ib - px(ICON_SIZE)) / 2
                 - (quick.size() + 1) * ib - quick.size() * ig;
+        placeTeam(quick.isEmpty(), qx);
         for (int q : quick) {
             addIcon(QUICK + QUICK_NAMES[q], Strings.t(QUICK_LABELS[q]), new LineIcon(QUICK_ICONS[q]), qx);
             qx += ib + ig;
@@ -951,50 +1036,8 @@ public class MainActivity extends Activity {
         return weatherBox;
     }
 
-    // Shows the saved forecast, fetches a new one if it's 30 minutes old, and comes back when the
-    // next one is due. Called on resume, when the network comes back, and by its own timer.
-    private void refreshWeather() {
-        if (weatherBox == null) return;
-        View decor = getWindow().getDecorView();
-        decor.removeCallbacks(weatherTick);
-        SharedPreferences p = prefs();
-        if (p.getString(Weather.PREF_PLACE, null) == null) {
-            weatherBox.setVisibility(View.GONE);
-            return;
-        }
-        showWeather();
-        long now = System.currentTimeMillis();
-        long age = now - p.getLong(Weather.PREF_AT, 0);
-        if (age < 0) age = Weather.REFRESH_MS; // the clock went back: fetch again
-        long next = Weather.REFRESH_MS - age;
-        if (next <= 0) {
-            if (!weatherLoading && now - weatherTriedAt >= Weather.RETRY_MS) {
-                weatherLoading = true;
-                new Thread(() -> {
-                    boolean ok;
-                    try {
-                        Weather.update(p);
-                        ok = true;
-                    } catch (Throwable t) {
-                        ok = false;
-                    }
-                    final boolean done = ok;
-                    runOnUiThread(() -> {
-                        weatherLoading = false;
-                        weatherTriedAt = done ? 0 : System.currentTimeMillis();
-                        if (isDestroyed()) return;
-                        showWeather();
-                        if (resumed) refreshWeather();
-                    });
-                }, "weather").start();
-                return;
-            }
-            next = Weather.RETRY_MS - (now - weatherTriedAt);
-        }
-        if (resumed) decor.postDelayed(weatherTick, Math.max(next, 60 * 1000L));
-    }
-
     private void showWeather() {
+        if (weatherBox == null) return;
         Weather.Now w = Weather.load(prefs(), System.currentTimeMillis());
         if (w == null) {
             weatherBox.setVisibility(View.GONE);
@@ -1037,6 +1080,185 @@ public class MainActivity extends Activity {
         s.setSpan(new android.text.style.ForegroundColorSpan(0xA8FFFFFF), slash, s.length(), 0);
         temps.setText(s);
         weatherDays.addView(temps, new LinearLayout.LayoutParams(-2, -2));
+    }
+
+    private final Map<String, Bitmap> crests = new HashMap<>();
+
+    private View buildTeam() {
+        teamBox = new LinearLayout(this);
+        teamBox.setOrientation(LinearLayout.HORIZONTAL);
+        teamBox.setVisibility(View.GONE);
+        teamTable = new LinearLayout(this);
+        teamTable.setOrientation(LinearLayout.VERTICAL);
+        teamBox.addView(teamTable, new LinearLayout.LayoutParams(px(TEAM_TABLE_W), -2));
+        teamMatch = new LinearLayout(this);
+        teamMatch.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams mp = new LinearLayout.LayoutParams(px(TEAM_MATCH_W), -2);
+        mp.leftMargin = px(TEAM_GAP);
+        teamBox.addView(teamMatch, mp);
+        return teamBox;
+    }
+
+    // Level with the date, just left of the icons at the top right. With settings shortcuts there,
+    // the icons reach too far left for that, so it goes under them instead.
+    private void placeTeam(boolean iconsAlone, int iconsLeft) {
+        if (teamBox == null) return;
+        int w = px(TEAM_TABLE_W + TEAM_GAP + TEAM_MATCH_W);
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) teamBox.getLayoutParams();
+        if (iconsAlone) {
+            lp.leftMargin = iconsLeft - px(40) - w;
+            lp.topMargin = px(96);
+        } else {
+            lp.leftMargin = getResources().getDisplayMetrics().widthPixels - px(MARGIN) - w;
+            lp.topMargin = px(ICON_TOP + ICON_BUTTON + 20);
+        }
+        teamBox.setLayoutParams(lp);
+    }
+
+    private void showTeam() {
+        if (teamBox == null) return;
+        Team.Now t = Team.load(prefs(), System.currentTimeMillis());
+        if (t == null) {
+            teamBox.setVisibility(View.GONE);
+            return;
+        }
+        teamTable.removeAllViews();
+        teamTable.addView(teamHeader(t.league));
+        for (Team.Row r : t.table) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            int color = r.me ? Color.WHITE : 0x9EFFFFFF;
+            Typeface tf = r.me ? semibold : regular;
+            TextView rank = text(px(24), r.me ? 0xFFB48CFF : color, tf);
+            rank.setText(String.valueOf(r.rank));
+            rank.setGravity(Gravity.END);
+            rank.setFontFeatureSettings("tnum");
+            row.addView(rank, new LinearLayout.LayoutParams(px(34), -2));
+            ImageView crest = new ImageView(this);
+            crest.setImageBitmap(crest(r.id));
+            LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(px(26), px(26));
+            cp.leftMargin = px(12);
+            cp.rightMargin = px(10);
+            row.addView(crest, cp);
+            TextView name = text(px(24), color, tf);
+            name.setText(r.name);
+            name.setSingleLine(true);
+            name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            row.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+            TextView pts = text(px(24), color, tf);
+            pts.setText(String.valueOf(r.points));
+            pts.setFontFeatureSettings("tnum");
+            LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(-2, -2);
+            pp.leftMargin = px(10);
+            row.addView(pts, pp);
+            teamTable.addView(row, new LinearLayout.LayoutParams(-1, px(TEAM_ROW)));
+        }
+
+        teamMatch.removeAllViews();
+        Team.Match m = t.next;
+        if (m != null) {
+            teamMatch.addView(teamHeader(Strings.t("Next match")));
+            TextView when = text(px(22), 0x9EFFFFFF, regular);
+            when.setText(m.live ? Strings.t("Live now") : matchTime(m));
+            when.setSingleLine(true);
+            teamMatch.addView(when, new LinearLayout.LayoutParams(-2, -2));
+
+            // Home team's crest first, as the fixture is written.
+            LinearLayout sides = new LinearLayout(this);
+            sides.setOrientation(LinearLayout.HORIZONTAL);
+            sides.setGravity(Gravity.CENTER_VERTICAL);
+            String left = m.home ? t.meId : m.opponentId, right = m.home ? m.opponentId : t.meId;
+            ImageView a = new ImageView(this), b = new ImageView(this);
+            a.setImageBitmap(crest(left));
+            b.setImageBitmap(crest(right));
+            sides.addView(a, new LinearLayout.LayoutParams(px(50), px(50)));
+            TextView dash = text(px(24), 0x80FFFFFF, regular);
+            dash.setText("–");
+            LinearLayout.LayoutParams dp = new LinearLayout.LayoutParams(-2, -2);
+            dp.leftMargin = dp.rightMargin = px(14);
+            sides.addView(dash, dp);
+            sides.addView(b, new LinearLayout.LayoutParams(px(50), px(50)));
+            LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(-2, -2);
+            sp.topMargin = px(10);
+            teamMatch.addView(sides, sp);
+
+            TextView opp = text(px(24), Color.WHITE, regular);
+            opp.setText(m.opponent);
+            opp.setSingleLine(true);
+            opp.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            LinearLayout.LayoutParams op = new LinearLayout.LayoutParams(-1, -2);
+            op.topMargin = px(8);
+            teamMatch.addView(opp, op);
+
+            LinearLayout tags = new LinearLayout(this);
+            tags.setOrientation(LinearLayout.HORIZONTAL);
+            tags.addView(tag(Strings.t(m.home ? "Home" : "Away")));
+            if (m.cup != null) {
+                View cup = tag(m.cup);
+                LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-2, -2);
+                tp.leftMargin = px(8);
+                tags.addView(cup, tp);
+            }
+            LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(-2, -2);
+            gp.topMargin = px(6);
+            teamMatch.addView(tags, gp);
+        }
+        teamMatch.setVisibility(m != null ? View.VISIBLE : View.GONE);
+        teamBox.setVisibility(View.VISIBLE);
+    }
+
+    private TextView teamHeader(String s) {
+        TextView h = text(px(20), 0x80FFFFFF, semibold);
+        h.setText(s.toUpperCase(java.util.Locale.getDefault()));
+        h.setLetterSpacing(0.08f);
+        h.setSingleLine(true);
+        h.setPadding(0, 0, 0, px(8));
+        return h;
+    }
+
+    private TextView tag(String s) {
+        TextView t = text(px(18), 0xC0FFFFFF, regular);
+        t.setText(s);
+        t.setSingleLine(true);
+        t.setPadding(px(8), px(1), px(8), px(2));
+        GradientDrawable border = new GradientDrawable();
+        border.setCornerRadius(px(6));
+        border.setStroke(Math.max(1, px(2)), 0x73FFFFFF);
+        t.setBackground(border);
+        return t;
+    }
+
+    // "lun 2 nov · 18:30", "Oggi · 20:45" or "Domani · 20:45", in the TV's language and time zone,
+    // with the clock's 12 or 24 hours. Without a fixed kick-off yet, just the day.
+    private String matchTime(Team.Match m) {
+        java.util.Locale loc = java.util.Locale.getDefault();
+        java.util.Calendar k = java.util.Calendar.getInstance(), c = java.util.Calendar.getInstance();
+        k.setTimeInMillis(m.kickoff);
+        String day;
+        if (sameDay(k, c)) day = Strings.t("Today");
+        else {
+            c.add(java.util.Calendar.DAY_OF_YEAR, 1);
+            day = sameDay(k, c) ? Strings.t("Tomorrow") : new java.text.SimpleDateFormat("EEE d MMM", loc).format(k.getTime());
+        }
+        if (!m.timeKnown) return day;
+        String pref = prefs().getString(PREF_CLOCK, null);
+        boolean h24 = "24".equals(pref) || (!"12".equals(pref) && android.text.format.DateFormat.is24HourFormat(this));
+        return day + "  ·  " + new java.text.SimpleDateFormat(h24 ? "HH:mm" : "h:mm a", loc).format(k.getTime());
+    }
+
+    private static boolean sameDay(java.util.Calendar a, java.util.Calendar b) {
+        return a.get(java.util.Calendar.YEAR) == b.get(java.util.Calendar.YEAR)
+                && a.get(java.util.Calendar.DAY_OF_YEAR) == b.get(java.util.Calendar.DAY_OF_YEAR);
+    }
+
+    private Bitmap crest(String id) {
+        Bitmap b = crests.get(id);
+        if (b == null) {
+            b = Team.crest(getFilesDir(), id);
+            if (b != null) crests.put(id, b);
+        }
+        return b;
     }
 
     private void refreshNetwork() {

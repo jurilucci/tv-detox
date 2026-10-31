@@ -555,7 +555,24 @@ WEATHER="Sesto Fiorentino" sh install.sh <TV_IP>
 WEATHER=off sh install.sh <TV_IP>      # take it away
 ```
 
-It shows the temperature now, then today's and tomorrow's high and low. The forecast comes from [Open-Meteo](https://open-meteo.com): free, no account, no key. It's the only part of this home screen that uses the internet, and only once you set a town: it looks the town up once, then fetches a forecast at most every 30 minutes while the home screen is on screen. Without internet it keeps showing the last forecast for up to 6 hours, then hides it.
+It shows the temperature now, then today's and tomorrow's high and low. The forecast comes from [Open-Meteo](https://open-meteo.com): free, no account, no key. It looks the town up once, then fetches a forecast at most every 30 minutes while the home screen is on screen. Without internet it keeps showing the last forecast for up to 6 hours, then hides it.
+
+</details>
+
+<details>
+<summary><b>Can I follow my football team?</b></summary>
+<br>
+
+Yes, for a Serie A team. It sits at the top right: its place in the table with the two teams above and below, and its next match in any competition, with both crests.
+
+```sh
+TEAM="Fiorentina" sh install.sh <TV_IP>
+TEAM=off sh install.sh <TV_IP>         # take it away
+```
+
+The data comes from ESPN's public site API: no account, no key, but it's unofficial, so if it ever changes this part just stays hidden. It updates at most every 2 hours while the home screen is on screen, and keeps each crest once it has it.
+
+The weather and the team are the only parts of this home screen that use the internet, and only once you turn them on.
 
 </details>
 

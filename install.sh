@@ -6,6 +6,7 @@
 #   sh install.sh <TV_IP> "" "bluetooth,sound,picture"   adds settings shortcuts by the clock
 #   CLOCK=24 sh install.sh <TV_IP>               24-hour clock (12, 24, or auto for the TV's own)
 #   WEATHER="Sesto Fiorentino" sh install.sh <TV_IP>   weather next to the clock (off to remove it)
+#   TEAM="Fiorentina" sh install.sh <TV_IP>      a Serie A team's table and next match (off to remove it)
 #   FAKE_INPUT=1 sh install.sh <emulator>        testing only: add a throwaway TV input, so an
 #                                                emulator with no HDMI ports still has one to draw
 #
@@ -64,13 +65,14 @@ if [ "$FAKE_INPUT" = 1 ]; then
   adb -s "$TV" install -r "$FAKE" >/dev/null
 fi
 
-if [ -n "$APPS" ] || [ -n "$QUICK" ] || [ -n "$CLOCK" ] || [ -n "$WEATHER" ] || [ -n "$FAKE_INPUT" ]; then
+if [ -n "$APPS" ] || [ -n "$QUICK" ] || [ -n "$CLOCK" ] || [ -n "$WEATHER" ] || [ -n "$TEAM" ] || [ -n "$FAKE_INPUT" ]; then
   # The stamp makes the app apply this list once, even if Android later replays this start.
   set -- --es stamp "$(date +%s)"
   [ -n "$APPS" ] && set -- "$@" --es apps "\"$APPS\""
   [ -n "$QUICK" ] && set -- "$@" --es quick "\"$QUICK\""
   [ -n "$CLOCK" ] && set -- "$@" --es clock "\"$CLOCK\""
   [ -n "$WEATHER" ] && set -- "$@" --es weather "\"$WEATHER\""
+  [ -n "$TEAM" ] && set -- "$@" --es team "\"$TEAM\""
   [ "$FAKE_INPUT" = 1 ] && set -- "$@" --es fakeinputs 1
   adb -s "$TV" shell am start -n com.ansub.tvhome/.MainActivity "$@" >/dev/null
 fi
