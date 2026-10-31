@@ -45,6 +45,11 @@ Claude Code or Codex does the work. You just press OK on the remote.
 
 **[▶ Claude Made My Old Android TV Feel Brand New](https://www.youtube.com/watch?v=fP2SGGVsaB0)** · the full setup on a real TV, in 4 minutes.
 
+> [!NOTE]
+> **Questo è un fork di [Ansub/tv-detox](https://github.com/Ansub/tv-detox)** con due aggiunte alla home screen: il **meteo** accanto all'orologio e la **classifica e la prossima partita** di una squadra di Serie A in alto a destra. Entrambe sono spente finché non le attivi con `WEATHER="Sesto Fiorentino"` e `TEAM="Fiorentina"` in `install.sh` (vedi [Can I see the weather next to the clock?](#help) e [Can I follow my football team?](#help)).
+>
+> **Release con l'APK:** [v1.5.7-meteo-fiorentina](https://github.com/jurilucci/tv-detox/releases/tag/v1.5.7-meteo-fiorentina). È firmato con una chiave diversa dalle release ufficiali: se sulla TV c'è la versione di Ansub, `install.sh` la disinstalla prima, e le personalizzazioni fatte sulla TV si perdono.
+
 ## Get started
 
 **1. Turn on developer mode on the TV.**
